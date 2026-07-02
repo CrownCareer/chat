@@ -1,318 +1,170 @@
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const axios = require('axios');
-
-const app = express();
-const PORT = process.env.PORT || 5000; // Render-এর জন্য process.env.PORT রাখা জরুরি
-
-// =================================================================
-// ⚙️ আপনার গিটহাব আইডি বসানো হয়েছে, নিচে সিক্রেট কোডটি বসিয়ে নিন
-// =================================================================
-const GITHUB_CLIENT_ID = "Ov23li88mXpUxFbUqDTs"; 
-const GITHUB_CLIENT_SECRET = "এখানে_আপনার_সিক্রেট_কোড_বসাবেন"; 
-
-app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// আপলোড করা ভিডিও রাখার জন্য ফোল্ডার তৈরি
-if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
-
-// চ্যাট হিস্ট্রি সাময়িকভাবে রাখার জন্য এররে (Array)
-let chatMessages = [
-    { id: 1, type: 'text', sender: 'System Bot', avatar: '', content: 'GitHub লগইন সফল হয়েছে! ডেভলপার চ্যাটরুমে স্বাগতম।', time: '১২:০০ PM' }
-];
-
-// ভিডিও মেসেজ সেভ করার জন্য Multer কনফিগারেশন
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
-});
-const upload = multer({ storage: storage });
-
-// ==========================================
-// ১. গিটহাব লগইন ও অথেন্টিকেশন সিস্টেম (OAuth)
-// ==========================================
-
-app.get('/auth/github', (req, res) => {
-    // ডাইনামিক হোস্ট নেম বের করার জন্য যাতে localhost বা Render সবখানেই কাজ করে
-    const host = req.get('host');
-    const protocol = host.includes('localhost') ? 'http' : 'https';
-    const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${protocol}://${host}/auth/github/callback&scope=user`;
-    res.redirect(url);
-});
-
-app.get('/auth/github/callback', async (req, res) => {
-    const code = req.query.code;
-    const host = req.get('host');
-    const protocol = host.includes('localhost') ? 'http' : 'https';
-    try {
-        const tokenResponse = await axios.post('https://github.com/login/oauth/access_token', {
-            client_id: GITHUB_CLIENT_ID,
-            client_secret: GITHUB_CLIENT_SECRET,
-            code: code
-        }, { headers: { accept: 'application/json' } });
-
-        const accessToken = tokenResponse.data.access_token;
-
-        const userResponse = await axios.get('https://api.github.com/user', {
-            headers: { Authorization: `token ${accessToken}` }
-        });
-
-        const userData = userResponse.data;
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>গোপন চ্যাট রুম</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #e5ddd5; display: flex; justify-content: center; align-items: center; height: 100vh; }
         
-        res.send(`
-            <script>
-                localStorage.setItem('github_user', JSON.stringify({
-                    name: "${userData.login}",
-                    avatar: "${userData.avatar_url}"
-                }));
-                window.location.href = "/";
-            </script>
-        `);
-    } catch (error) {
-        res.send("<h2>❌ গিটহাব লগইন ব্যর্থ হয়েছে। server.js ফাইলে Client Secret কোডটি ঠিকমতো বসিয়েছেন কি না চেক করুন।</h2>");
+        /* লগইন স্ক্রিন */
+        #login-box { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 320px; text-align: center; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        button { width: 100%; padding: 12px; background: #075e54; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #128c7e; }
+        
+        /* চ্যাট স্ক্রিন */
+        #chat-box { display: none; width: 100%; max-width: 600px; height: 90vh; background: #efeae2; flex-direction: column; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); overflow: hidden; }
+        #chat-header { background: #075e54; color: white; padding: 15px; font-size: 18px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        #search-container { padding: 10px; background: #fff; display: flex; gap: 5px; border-bottom: 1px solid #ddd; }
+        #search-input { margin: 0; padding: 8px; }
+        #search-btn { width: auto; padding: 8px 15px; margin: 0; font-size: 14px; }
+        #messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        /* মেসেজের বাবল */
+        .msg { max-width: 75%; padding: 10px 14px; border-radius: 8px; font-size: 15px; line-height: 1.4; position: relative; word-wrap: break-word; }
+        .msg.sent { background: #d9fdd3; align-self: flex-end; border-top-right-radius: 0; }
+        .msg.received { background: white; align-self: flex-start; border-top-left-radius: 0; }
+        .msg .sender { font-size: 11px; color: #128c7e; font-weight: bold; display: block; margin-bottom: 4px; }
+        
+        #input-area { background: #f0f2f5; padding: 10px; display: flex; gap: 10px; align-items: center; }
+        #msg-input { flex: 1; margin: 0; border-radius: 20px; padding: 12px 20px; }
+        #send-btn { width: auto; border-radius: 50%; width: 45px; height: 45px; padding: 0; display: flex; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body>
+
+<!-- লগইন এরিয়া -->
+<div id="login-box">
+    <h2>স্বাগতম</h2>
+    <p style="color: #666; font-size: 13px; margin-bottom: 10px;">গ্রুপে ঢুকতে ইউজারনেম ও পাসওয়ার্ড দিন</p>
+    <input type="text" id="username" placeholder="ইউজারনেম (ইংরেজিতে)">
+    <input type="password" id="password" placeholder="রুম পাসওয়ার্ড">
+    <button onclick="login()">প্রবেশ করুন</button>
+</div>
+
+<!-- চ্যাট রুম এরিয়া -->
+<div id="chat-box">
+    <div id="chat-header">
+        <span id="room-title">অনলাইন আড্ডা</span>
+        <button onclick="location.reload()" style="width:auto; background:transparent; font-size:12px; padding:5px;">লগআউট</button>
+    </div>
+    
+    <!-- ইউজার খোঁজার অপশন -->
+    <div id="search-container">
+        <input type="text" id="search-input" placeholder="ইউজারনেম দিয়ে মেসেজ খুঁজুন...">
+        <button id="search-btn" onclick="searchUserMessages()">খুঁজুন</button>
+    </div>
+    
+    <div id="messages"></div>
+    
+    <div id="input-area">
+        <input type="text" id="msg-input" placeholder="মেসেজ লিখুন..." onkeypress="if(event.key==='Enter') sendMsg()">
+        <button id="send-btn" onclick="sendMsg()">➔</button>
+    </div>
+</div>
+
+<!-- Firebase লাইব্রেরি যুক্ত করা -->
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+<script>
+    // আপনার রুমের জন্য একটি সাধারণ পাসওয়ার্ড (এটি আপনার বন্ধুদের জানিয়ে দেবেন)
+    const ROOM_PASSWORD = "mysecretroom"; 
+
+    // Firebase কনফিগারেশন (একটি ফ্রি ডাটাবেজ রিয়েলটাইম মেসেজ আদান-প্রদানের জন্য)
+    // এটি টেস্ট ডাটাবেজ, আপনি চাইলে নিজের ফায়ারবেজ কি বসিয়ে নিতে পারেন।
+    const firebaseConfig = {
+        databaseURL: "https://public-chat-bdfc3-default-rtdb.firebaseio.com/"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+    
+    let currentUser = "";
+
+    // লগইন ফাংশন
+    function login() {
+        const userInp = document.getElementById('username').value.trim();
+        const passInp = document.getElementById('password').value.trim();
+
+        if(userInp === "" || passInp === "") {
+            alert("দয়া করে ইউজারনেম এবং পাসওয়ার্ড দুটিই দিন।");
+            return;
+        }
+
+        if(passInp === ROOM_PASSWORD) {
+            currentUser = userInp;
+            document.getElementById('login-box').style.display = 'none';
+            document.getElementById('chat-box').style.display = 'flex';
+            loadMessages(); // মেসেজ লোড করা শুরু
+        } else {
+            alert("দুঃখিত! পাসওয়ার্ডটি সঠিক নয়।");
+        }
     }
-});
 
-// ==========================================
-// ২. চ্যাট API সমূহ
-// ==========================================
+    // মেসেজ পাঠানো
+    function sendMsg() {
+        const msgInp = document.getElementById('msg-input');
+        const text = msgInp.value.trim();
+        
+        if(text !== "") {
+            database.ref("global_messages").push({
+                sender: currentUser,
+                message: text,
+                timestamp: Date.now()
+            });
+            msgInp.value = "";
+        }
+    }
 
-app.get('/api/messages', (req, res) => res.json(chatMessages));
+    // ডাটাবেজ থেকে লাইভ মেসেজ পড়া
+    function loadMessages() {
+        const msgArea = document.getElementById('messages');
+        database.ref("global_messages").on("value", (snapshot) => {
+            msgArea.innerHTML = "";
+            snapshot.forEach((childSnapshot) => {
+                const data = childSnapshot.val();
+                displayMessage(data.sender, data.message);
+            });
+            msgArea.scrollTop = msgArea.scrollHeight;
+        });
+    }
 
-app.post('/api/messages/text', (req, res) => {
-    const { sender, avatar, content } = req.body;
-    const newMsg = {
-        id: Date.now(),
-        type: 'text',
-        sender: sender || 'Guest Dev',
-        avatar: avatar || '',
-        content: content,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    chatMessages.push(newMsg);
-    res.json(newMsg);
-});
+    // স্ক্রিনে মেসেজ দেখানো
+    function displayMessage(sender, text) {
+        const msgArea = document.getElementById('messages');
+        const div = document.createElement('div');
+        const isMe = sender === currentUser;
+        
+        div.className = `msg ${isMe ? 'sent' : 'received'}`;
+        div.innerHTML = `<span class="sender">${sender}</span>${text}`;
+        msgArea.appendChild(div);
+    }
 
-app.post('/api/messages/video', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'কোনো ফাইল পাওয়া যায়নি।' });
-    
-    const host = req.get('host');
-    const protocol = host.includes('localhost') ? 'http' : 'https';
-    const fileUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
-    
-    const newMsg = {
-        id: Date.now(),
-        type: 'video',
-        sender: req.body.sender || 'Guest Dev',
-        avatar: req.body.avatar || '',
-        content: fileUrl,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    chatMessages.push(newMsg);
-    res.json(newMsg);
-});
+    // ইউজারনেম দিয়ে মেসেজ খোঁজার ফাংশন
+    function searchUserMessages() {
+        const searchName = document.getElementById('search-input').value.trim().toLowerCase();
+        const allMessages = document.querySelectorAll('.msg');
+        
+        if(searchName === "") {
+            // সার্চ খালি থাকলে সব মেসেজ নরমাল করে দাও
+            allMessages.forEach(msg => msg.style.opacity = "1");
+            return;
+        }
 
-// ==========================================
-// ৩. ফ্রন্টঅ্যান্ড UI (গিটহাব ডার্ক থিম)
-// ==========================================
-app.get('/', (req, res) => {
-    res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Dev WhatsApp with GitHub Auth</title>
-        <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 0; display: flex; justify-content: center; height: 100vh; }
-            .chat-container, .login-container { width: 100%; max-width: 600px; background: #161b22; display: flex; flex-direction: column; height: 100vh; border-left: 1px solid #30363d; border-right: 1px solid #30363d; }
-            
-            .login-container { justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box; }
-            .login-btn { background: #238636; color: white; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: 600; font-size: 16px; display: inline-flex; align-items: center; gap: 10px; margin-top: 25px; border: 1px solid rgba(240,246,fc,0.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
-            .login-btn:hover { background: #2ea043; }
-
-            .chat-header { background: #21262d; padding: 15px 20px; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between; }
-            .user-info { display: flex; align-items: center; gap: 10px; }
-            .avatar { width: 36px; height: 36px; border-radius: 50%; border: 1px solid #30363d; background: #30363d; object-fit: cover; }
-            
-            .chat-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; background: #0d1117; }
-            .message-bubble { max-width: 75%; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.4; word-break: break-word; background: #21262d; align-self: flex-start; border: 1px solid #30363d; }
-            .msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-            .msg-name { font-size: 12px; color: #58a6ff; font-weight: 600; }
-            .msg-time { font-size: 10px; color: #8b949e; text-align: right; margin-top: 5px; display: block; }
-            video { width: 100%; max-width: 260px; border-radius: 6px; margin-top: 5px; background: #000; }
-            
-            .camera-preview-box { position: absolute; right: 20px; top: 80px; width: 130px; height: 170px; background: #010409; border: 2px solid #238636; border-radius: 8px; overflow: hidden; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.6); z-index: 10; }
-            .camera-preview-box video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); margin: 0; }
-
-            .chat-input-area { background: #21262d; padding: 15px; border-top: 1px solid #30363d; display: flex; gap: 10px; align-items: center; position: relative; }
-            input[type="text"] { flex: 1; background: #0d1117; border: 1px solid #30363d; padding: 12px; border-radius: 6px; color: #f0f6fc; font-size: 14px; }
-            input[type="text"]:focus { outline: none; border-color: #58a6ff; }
-            
-            button { background: #238636; color: white; border: none; padding: 11px 20px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 14px; }
-            button:hover { background: #2ea043; }
-            #recordBtn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
-            #recordBtn.recording { background: #da3637; color: white; }
-            
-            .logout-btn { background: none; border: 1px solid #30363d; color: #f85149; padding: 6px 12px; font-size: 12px; }
-            .logout-btn:hover { background: #30363d; }
-        </style>
-    </head>
-    <body>
-
-        <div class="login-container" id="loginScreen">
-            <svg height="60" viewBox="0 0 16 16" width="60" fill="#c9d1d9"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
-            <h1 style="color: #f0f6fc; font-size: 24px; margin: 15px 0 5px 0;">Dev WhatsApp HUB</h1>
-            <p style="color: #8b949e; margin: 0; font-size: 14px;">কোড রিভিউ ও ডেভেলপার কমিউনিকেশনের জন্য অডিও-ভিডিও চ্যাট</p>
-            <a href="/auth/github" class="login-btn">
-                <span>Sign Up / Login with GitHub</span>
-            </a>
-        </div>
-
-        <div class="chat-container" id="chatScreen" style="display: none;">
-            <div class="chat-header">
-                <div class="user-info">
-                    <img class="avatar" id="myAvatar" src="">
-                    <div>
-                        <h3 id="myUsername" style="margin:0; font-size:14px; color:#f0f6fc;">Username</h3>
-                        <span style="font-size:11px; color:#58a6ff;">● Online (Developer)</span>
-                    </div>
-                </div>
-                <button class="logout-btn" onclick="logout()">Logout</button>
-            </div>
-
-            <div class="camera-preview-box" id="previewBox"><video id="preview" autoplay muted></video></div>
-            
-            <div class="chat-messages" id="chatWindow"></div>
-
-            <div class="chat-input-area">
-                <button id="recordBtn">🎤 Video</button>
-                <input type="text" id="textInput" placeholder="একটি মেসেজ লিখুন..." autocomplete="off">
-                <button id="sendBtn">Send</button>
-            </div>
-        </div>
-
-        <script>
-            const loginScreen = document.getElementById('loginScreen');
-            const chatScreen = document.getElementById('chatScreen');
-            const chatWindow = document.getElementById('chatWindow');
-            const textInput = document.getElementById('textInput');
-            const sendBtn = document.getElementById('sendBtn');
-            const recordBtn = document.getElementById('recordBtn');
-            const previewVideo = document.getElementById('preview');
-            const previewBox = document.getElementById('previewBox');
-
-            let currentUser = JSON.parse(localStorage.getItem('github_user'));
-            let mediaRecorder, recordedChunks = [], isRecording = false;
-
-            if (currentUser) {
-                loginScreen.style.display = 'none';
-                chatScreen.style.display = 'flex';
-                document.getElementById('myUsername').innerText = currentUser.name;
-                document.getElementById('myAvatar').src = currentUser.avatar;
-                loadMessages();
-                setInterval(loadMessages, 3000); 
+        allMessages.forEach(msg => {
+            const senderName = msg.querySelector('.sender').innerText.toLowerCase();
+            if(senderName.includes(searchName)) {
+                msg.style.opacity = "1";
+                msg.style.border = "2px solid #075e54"; // হাইলাইট
+            } else {
+                msg.style.opacity = "0.3"; // আবছা করে দেওয়া
+                msg.style.border = "none";
             }
-
-            function logout() {
-                localStorage.removeItem('github_user');
-                window.location.reload();
-            }
-
-            async function loadMessages() {
-                try {
-                    const res = await fetch('/api/messages');
-                    const messages = await res.json();
-                    chatWindow.innerHTML = '';
-                    
-                    messages.forEach(msg => {
-                        const bubble = document.createElement('div');
-                        bubble.className = 'message-bubble';
-                        
-                        let userImg = msg.avatar ? \`<img src="\${msg.avatar}" class="avatar" style="width:20px; height:20px;">\` : '';
-                        let contentHTML = msg.type === 'text' 
-                            ? '<div>' + msg.content + '</div>'
-                            : '<video src="' + msg.content + '" controls></video>';
-
-                        bubble.innerHTML = \`
-                            <div class="msg-header">
-                                \${userImg}
-                                <span class="msg-name">\${msg.sender}</span>
-                            </div>
-                            \${contentHTML}
-                            <span class="msg-time">\${msg.time}</span>
-                        \`;
-                        chatWindow.appendChild(bubble);
-                    });
-                    chatWindow.scrollTop = chatWindow.scrollHeight;
-                } catch (err) {}
-            }
-
-            sendBtn.onclick = async () => {
-                const text = textInput.value.trim();
-                if(!text) return;
-                
-                await fetch('/api/messages/text', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sender: currentUser.name, avatar: currentUser.avatar, content: text })
-                });
-                textInput.value = '';
-                loadMessages();
-            };
-            textInput.onkeypress = (e) => { if(e.key === 'Enter') sendBtn.click(); };
-
-            recordBtn.onclick = async () => {
-                if (!isRecording) {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                        previewVideo.srcObject = stream;
-                        previewBox.style.display = 'block';
-                        mediaRecorder = new MediaRecorder(stream);
-                        recordedChunks = [];
-                        
-                        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-                        
-                        mediaRecorder.onstop = async () => {
-                            stream.getTracks().forEach(track => track.stop());
-                            previewBox.style.display = 'none';
-                            
-                            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-                            const formData = new FormData();
-                            formData.append('video', blob, 'chat-video.webm');
-                            formData.append('sender', currentUser.name);
-                            formData.append('avatar', currentUser.avatar);
-
-                            recordBtn.innerText = "⏳ Sending...";
-                            recordBtn.disabled = true;
-
-                            await fetch('/api/messages/video', { method: 'POST', body: formData });
-                            
-                            recordBtn.innerText = "🎤 Video";
-                            recordBtn.disabled = false;
-                            loadMessages();
-                        };
-                        
-                        mediaRecorder.start();
-                        isRecording = true;
-                        recordBtn.innerText = "🛑 Stop";
-                        recordBtn.classList.add('recording');
-                    } catch (err) { alert("ক্যামেরা পারমিশন দিন!"); }
-                } else {
-                    mediaRecorder.stop();
-                    isRecording = false;
-                    recordBtn.classList.remove('recording');
-                }
-            };
-        </script>
-    </body>
-    </html>
-    `);
-});
-
-app.listen(PORT, () => {
-    console.log(`🚀 সার্ভার চালু হয়েছে পোর্ট: ${PORT}`);
-});
+        });
+    }
+</script>
+</body>
+</html>
